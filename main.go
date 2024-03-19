@@ -1,85 +1,68 @@
 package main
 
 import (
-    "crypto/rand"
-    "encoding/base64"
-    "fmt"
-    "log"
-    "net/http"
-    "sync"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
 
-    "github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2"
+	"github.com/henimbola/shlk/db"
+	"github.com/henimbola/shlk/services"
 )
 
-// ShortURLMap holds mappings between short and long URLs
-type ShortURLMap struct {
-    sync.RWMutex
-    urls map[string]string
-}
-
-// ShortenURL generates a short URL and maps it to the original URL
-func (m *ShortURLMap) ShortenURL(longURL string) string {
-    m.Lock()
-    defer m.Unlock()
-
-    shortURL := generateShortURL()
-    m.urls[shortURL] = longURL
-
-    return shortURL
-}
-
-// ResolveURL returns the original long URL given a short URL
-func (m *ShortURLMap) ResolveURL(shortURL string) (string, error) {
-    m.RLock()
-    defer m.RUnlock()
-
-    longURL, ok := m.urls[shortURL]
-    if !ok {
-        return "", fmt.Errorf("short URL not found")
-    }
-
-    return longURL, nil
-}
-
-func generateShortURL() string {
-    b := make([]byte, 6)
-    rand.Read(b)
-    return base64.URLEncoding.EncodeToString(b)
-}
-
 func main() {
-    app := fiber.New()
+	_, err := os.Stat("urls.kv")
+	if err == nil {
+		fmt.Println("File exists")
+	} else if os.IsNotExist(err) {
+		file, err := os.Create("urls.kv")
 
-    // Initialize ShortURLMap
-    urlMap := &ShortURLMap{
-        urls: make(map[string]string),
-    }
+		if err != nil {
+			log.Fatal(err)
+		}
 
-    // POST /shorten
-    app.Post("/shorten", func(c *fiber.Ctx) error {
-        type request struct {
-            LongURL string `json:"long_url"`
-        }
+		defer file.Close()
+	} else {
+		fmt.Println("Error:", err)
+	}
 
-        var req request
-        if err := c.BodyParser(&req); err != nil {
-            return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-        }
+	db := &db.UrlDB{}
+	app := fiber.New()
 
-        shortURL := urlMap.ShortenURL(req.LongURL)
-        return c.JSON(fiber.Map{"short_url": shortURL})
-    })
+	// Initialize ShortURLMap
+	urlMap := &services.ShortURLMap{
+		Urls: make(map[string]string),
+	}
 
-    // GET /:shortURL
-    app.Get("/:shortURL", func(c *fiber.Ctx) error {
-        shortURL := c.Params("shortURL")
-        longURL, err := urlMap.ResolveURL(shortURL)
-        if err != nil {
-            return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Short URL not found"})
-        }
+	// POST /shorten
+	app.Post("/shorten", func(c *fiber.Ctx) error {
+		type request struct {
+			LongURL string `json:"long_url"`
+		}
 
-        return c.Redirect(longURL, http.StatusMovedPermanently)
-    })
+		var req request
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
 
-    log.Fatal(app.Listen(":3000"))
+		shortURL := urlMap.ShortenURL(req.LongURL)
+		return c.JSON(fiber.Map{"short_url": shortURL})
+	})
+
+	// GET /:shortURL
+	app.Get("/:shortURL", func(c *fiber.Ctx) error {
+		shortURL := c.Params("shortURL")
+
+		longURL, err := db.GetUrl(shortURL)
+		if err != nil {
+			return c.Status(http.StatusNotFound).JSON(fiber.Map{"error": "Short URL not found"})
+		}
+
+		return c.Redirect(longURL, http.StatusMovedPermanently)
+	})
+
+	app.Static("/", "./public")
+
+	log.Fatal(app.Listen(":3000"))
 }
